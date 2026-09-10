@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>H3O+ + OH- Reaktion — 3D Simulation</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%; overflow: hidden;
+    background: #1a1d23;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: #eee;
+  }
+  #canvas-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+  #ui {
+    position: absolute; top: 16px; left: 16px; right: 16px;
+    display: flex; justify-content: space-between; align-items: flex-start;
+    pointer-events: none;
+  }
+  #instructions {
+    background: rgba(30,33,40,0.85);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 10px;
+    padding: 12px 16px;
+    max-width: 440px;
+    font-size: 13.5px;
+    line-height: 1.5;
+    pointer-events: auto;
+  }
+  #instructions b { color: #ffd479; }
+  #resetBtn {
+    pointer-events: auto;
+    background: rgba(30,33,40,0.85);
+    border: 1px solid rgba(255,255,255,0.15);
+    color: #eee;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  #resetBtn:hover { background: rgba(50,54,64,0.9); }
+  #status {
+    position: absolute; bottom: 90px; left: 0; right: 0;
+    text-align: center;
+    font-size: 22px;
+    font-weight: 600;
+    color: #9fe1cb;
+    text-shadow: 0 2px 12px rgba(0,0,0,0.6);
+    pointer-events: none;
+    transition: opacity 0.4s;
+  }
+  #legend {
+    position: absolute; bottom: 20px; left: 16px;
+    background: rgba(30,33,40,0.8);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 10px;
+    padding: 8px 14px;
+    font-size: 12px;
+    line-height: 1.9;
+  }
+  .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; vertical-align:middle; }
+  .bar { display:inline-block; width:12px; height:4px; border-radius:2px; margin-right:6px; vertical-align:middle; }
+</style>
+</head>
+<body>
+<div id="canvas-container"></div>
+<div id="ui">
+  <div id="instructions">
+    Ziehe eines der <b>freien Elektronenpaare</b> von OH⁻ (gelb) mit der Maus in Richtung eines
+    H-Atoms von H₃O⁺.
+  </div>
+  <button id="resetBtn">Zurücksetzen</button>
+</div>
+<div id="legend">
+  <div><span class="dot" style="background:#e24b4a"></span>Sauerstoff (O)</div>
+  <div><span class="dot" style="background:#f1f1f1"></span>Wasserstoff (H)</div>
+  <div><span class="bar" style="background:#ffd479"></span>freies Elektronenpaar</div>
+  <div><span class="bar" style="background:#888c92"></span>bindendes Elektronenpaar</div>
+</div>
+<div id="status"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function(){
+  const container = document.getElementById('canvas-container');
+  const statusEl = document.getElementById('status');
+  const resetBtn = document.getElementById('resetBtn');
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 100);
+  camera.position.set(0, 0.6, 9);
+  camera.lookAt(0,0,0);
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  container.appendChild(renderer.domElement);
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.65));
+  const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
+  dirLight.position.set(3,5,6);
+  scene.add(dirLight);
+  const dirLight2 = new THREE.DirectionalLight(0xffffff, 0.35);
+  dirLight2.position.set(-4,-2,-3);
+  scene.add(dirLight2);
+
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth/window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  const O_COLOR = 0xe24b4a;
+  const H_COLOR = 0xf1f1f1;
+  const LP_COLOR = 0xffd479;
+  const STICK_COLOR = 0x888c92;
+
+  const worldGroup = new THREE.Group();
+  scene.add(worldGroup);
+
+  function makeAtom(radius, color) {
+    const geo = new THREE.SphereGeometry(radius, 24, 20);
+    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.4, metalness: 0.05 });
+    return new THREE.Mesh(geo, mat);
+  }
+
+  function makeStick(start, end) {
+    const dir = new THREE.Vector3().subVectors(end, start);
+    const len = dir.length();
+    const geo = new THREE.CylinderGeometry(0.045, 0.045, len, 10);
+    const mat = new THREE.MeshStandardMaterial({ color: STICK_COLOR, roughness: 0.6, transparent: true, opacity: 0.85 });
+    const mesh = new THREE.Mesh(geo, mat);
+    const mid = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
+    mesh.position.copy(mid);
+    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir.clone().normalize());
+    return mesh;
+  }
+
+  function perpOf(dir) {
+    let ref = new THREE.Vector3(0,1,0);
+    if (Math.abs(dir.dot(ref)) > 0.9) ref = new THREE.Vector3(1,0,0);
+    return new THREE.Vector3().crossVectors(dir, ref).normalize();
+  }
+
+  function makeLonePair(dir, dist) {
+    const g = new THREE.Group();
+    g.position.copy(dir.clone().multiplyScalar(dist));
+    const perp = perpOf(dir);
+    const geo = new THREE.CylinderGeometry(0.09, 0.09, 0.42, 12);
+    const mat = new THREE.MeshStandardMaterial({ color: LP_COLOR, roughness: 0.5,
+      emissive: LP_COLOR, emissiveIntensity: 0.35, transparent: true, opacity: 0.92 });
+    const bar = new THREE.Mesh(geo, mat);
+    bar.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), perp);
+    g.add(bar);
+    return g;
+  }
+
+  function makeBracket(height, halfWidth) {
+    const notch = 0.22;
+    const pts = [];
+    pts.push(new THREE.Vector3(halfWidth, height/2, 0), new THREE.Vector3(halfWidth-notch, height/2, 0));
+    pts.push(new THREE.Vector3(halfWidth, height/2, 0), new THREE.Vector3(halfWidth, -height/2, 0));
+    pts.push(new THREE.Vector3(halfWidth, -height/2, 0), new THREE.Vector3(halfWidth-notch, -height/2, 0));
+    pts.push(new THREE.Vector3(-halfWidth, height/2, 0), new THREE.Vector3(-halfWidth+notch, height/2, 0));
+    pts.push(new THREE.Vector3(-halfWidth, height/2, 0), new THREE.Vector3(-halfWidth, -height/2, 0));
+    pts.push(new THREE.Vector3(-halfWidth, -height/2, 0), new THREE.Vector3(-halfWidth+notch, -height/2, 0));
+    const geo = new THREE.BufferGeometry().setFromPoints(pts);
+    const mat = new THREE.LineBasicMaterial({ color: 0xaeb4bd });
+    return new THREE.LineSegments(geo, mat);
+  }
+
+  function makeChargeSprite(text, color) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 128; canvas.height = 128;
+    const ctx = canvas.getContext('2d');
+    ctx.font = 'bold 96px sans-serif';
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, 64, 68);
+    const tex = new THREE.CanvasTexture(canvas);
+    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
+    const sprite = new THREE.Sprite(mat);
+    sprite.scale.set(0.5, 0.5, 0.5);
+    return sprite;
+  }
+
+  const BOND_LEN = 1.05;
+  const LP_DIST = 0.95;
+
+  const groupAcid = new THREE.Group();
+  groupAcid.position.set(-2.6, 0, 0);
+  worldGroup.add(groupAcid);
+
+  const acidLoneDir = new THREE.Vector3(0, 1, 0);
+  const acidHDirs = [0, 120, 240].map(deg => {
+    const rad = deg * Math.PI/180;
+    const elev = -28 * Math.PI/180;
+    return new THREE.Vector3(Math.cos(rad)*Math.cos(elev), Math.sin(elev), Math.sin(rad)*Math.cos(elev));
+  });
+  const oAcid = makeAtom(0.42, O_COLOR);
+  groupAcid.add(oAcid);
+  const hAcidAtoms = [];
+  const sticksAcid = [];
+  acidHDirs.forEach(d => {
+    const h = makeAtom(0.27, H_COLOR);
+    h.position.copy(d.clone().multiplyScalar(BOND_LEN));
+    groupAcid.add(h);
+    hAcidAtoms.push(h);
+    const stick = makeStick(new THREE.Vector3(0,0,0), h.position);
+    groupAcid.add(stick);
+    sticksAcid.push(stick);
+  });
+  const lpAcid = makeLonePair(acidLoneDir, LP_DIST);
+  groupAcid.add(lpAcid);
+
+  const acidBracket = makeBracket(3.0, 1.15);
+  groupAcid.add(acidBracket);
+  const acidCharge = makeChargeSprite('+', '#ffb347');
+  acidCharge.position.set(1.55, 1.75, 0);
+  groupAcid.add(acidCharge);
+
+  const groupBase = new THREE.Group();
+  groupBase.position.set(2.6, 0, 0);
+  worldGroup.add(groupBase);
+
+  const baseHDir = new THREE.Vector3(0.85, 0.45, 0.3).normalize();
+  const activeLPDir = new THREE.Vector3(-1, 0.15, -0.1).normalize();
+  const lp2Dir = new THREE.Vector3(0.1, -0.9, 0.55).normalize();
+  const lp3Dir = new THREE.Vector3(0.2, -0.55, -0.85).normalize();
+
+  const oBase = makeAtom(0.42, O_COLOR);
+  groupBase.add(oBase);
+  const hBase = makeAtom(0.27, H_COLOR);
+  hBase.position.copy(baseHDir.clone().multiplyScalar(BOND_LEN));
+  groupBase.add(hBase);
+  const stickBase = makeStick(new THREE.Vector3(0,0,0), hBase.position);
+  groupBase.add(stickBase);
+
+  const lpActive = makeLonePair(activeLPDir, LP_DIST);
+  groupBase.add(lpActive);
+  const lp2 = makeLonePair(lp2Dir, LP_DIST);
+  groupBase.add(lp2);
+  const lp3 = makeLonePair(lp3Dir, LP_DIST);
+  groupBase.add(lp3);
+
+  const baseBracket = makeBracket(3.0, 1.15);
+  groupBase.add(baseBracket);
+  const baseCharge = makeChargeSprite('-', '#8ec9f0');
+  baseCharge.position.set(1.55, 1.75, 0);
+  groupBase.add(baseCharge);
+
+  let reacting = false;
+  let reactionDone = false;
+  let dragging = false;
+  let stretchDash = null;
+  let lastTargetHIndex = -1;
+  let draggingPair = null;
+  let usedPair = null;
+  const basePairs = [lpActive, lp2, lp3];
+  let dragAnchorWorld = null;
+  let dragPlane = new THREE.Plane();
+  const raycaster = new THREE.Raycaster();
+  const mouse = new THREE.Vector2();
+
+  let rotDragging = false;
+  let lastPointer = { x:0, y:0 };
+  let rotY = 0, rotX = 0;
+
+  function setStatus(text, color) {
+    statusEl.textContent = text;
+    statusEl.style.color = color || '#9fe1cb';
+    statusEl.style.opacity = text ? '1' : '0';
+  }
+
+  function pointerToNDC(e) {
+    const rect = renderer.domElement.getBoundingClientRect();
+    mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  }
+
+  function updateStretchDash(tipWorld) {
+    const anchorLocal = worldGroup.worldToLocal(dragAnchorWorld.clone());
+    const tipLocal = worldGroup.worldToLocal(tipWorld.clone());
+    const dir = new THREE.Vector3().subVectors(tipLocal, anchorLocal);
+    const len = Math.max(dir.length(), 0.02);
+    const mid = new THREE.Vector3().addVectors(anchorLocal, tipLocal).multiplyScalar(0.5);
+    stretchDash.position.copy(mid);
+    stretchDash.scale.set(1, len / stretchDash.geometry.parameters.height, 1);
+    stretchDash.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir.normalize());
+  }
+
+  renderer.domElement.addEventListener('pointerdown', (e) => {
+    pointerToNDC(e);
+    raycaster.setFromCamera(mouse, camera);
+    if (!reacting && !reactionDone) {
+      let hitGroup = null;
+      for (const g of basePairs) {
+        if (!g.visible) continue;
+        const hits = raycaster.intersectObjects(g.children, true);
+        if (hits.length > 0) { hitGroup = g; break; }
+      }
+      if (hitGroup) {
+        dragging = true;
+        draggingPair = hitGroup;
+        hitGroup.visible = false;
+        dragAnchorWorld = hitGroup.getWorldPosition(new THREE.Vector3());
+        const camDir = camera.getWorldDirection(new THREE.Vector3()).negate();
+        dragPlane.setFromNormalAndCoplanarPoint(camDir, dragAnchorWorld);
+        const geo = new THREE.CylinderGeometry(0.06, 0.06, 1, 8);
+        const mat = new THREE.MeshStandardMaterial({ color: LP_COLOR, emissive: LP_COLOR, emissiveIntensity: 0.55, roughness: 0.5 });
+        stretchDash = new THREE.Mesh(geo, mat);
+        worldGroup.add(stretchDash);
+        updateStretchDash(dragAnchorWorld);
+        setStatus('Ziehe das Elektronenpaar zu einem H-Atom von H₃O⁺');
+        return;
+      }
+    }
+    rotDragging = true;
+    lastPointer = { x: e.clientX, y: e.clientY };
+  });
+
+  window.addEventListener('pointermove', (e) => {
+    if (dragging) {
+      pointerToNDC(e);
+      raycaster.setFromCamera(mouse, camera);
+      const tipWorld = new THREE.Vector3();
+      raycaster.ray.intersectPlane(dragPlane, tipWorld);
+      updateStretchDash(tipWorld);
+
+      let closestIndex = -1, closestDist = Infinity, closestWorld = null;
+      hAcidAtoms.forEach((h, i) => {
+        const w = h.getWorldPosition(new THREE.Vector3());
+        const d = raycaster.ray.distanceToPoint(w);
+        if (d < closestDist) { closestDist = d; closestIndex = i; closestWorld = w; }
+      });
+      if (closestDist < 0.45) {
+        triggerReaction(closestIndex, closestWorld);
+      }
+    } else if (rotDragging) {
+      const dx = e.clientX - lastPointer.x;
+      const dy = e.clientY - lastPointer.y;
+      rotY += dx * 0.006;
+      rotX += dy * 0.006;
+      rotX = Math.max(-1.0, Math.min(1.0, rotX));
+      worldGroup.rotation.y = rotY;
+      worldGroup.rotation.x = rotX;
+      lastPointer = { x: e.clientX, y: e.clientY };
+    }
+  });
+
+  window.addEventListener('pointerup', () => {
+    if (dragging && !reacting && !reactionDone) {
+      worldGroup.remove(stretchDash);
+      stretchDash = null;
+      if (draggingPair) draggingPair.visible = true;
+      draggingPair = null;
+      setStatus('');
+    }
+    dragging = false;
+    rotDragging = false;
+  });
+
+  function tweenVec(obj, target, duration, onDone) {
+    const start = obj.clone();
+    const t0 = performance.now();
+    function step(now) {
+      const t = Math.min(1, (now - t0) / duration);
+      const e = 1 - Math.pow(1-t, 3);
+      obj.x = start.x + (target.x - start.x) * e;
+      obj.y = start.y + (target.y - start.y) * e;
+      obj.z = start.z + (target.z - start.z) * e;
+      if (t < 1) requestAnimationFrame(step);
+      else if (onDone) onDone();
+    }
+    requestAnimationFrame(step);
+  }
+
+  function tweenScalar(setter, from, to, duration, onDone) {
+    const t0 = performance.now();
+    function step(now) {
+      const t = Math.min(1, (now - t0) / duration);
+      const e = t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2;
+      setter(from + (to - from) * e);
+      if (t < 1) requestAnimationFrame(step);
+      else if (onDone) onDone();
+    }
+    requestAnimationFrame(step);
+  }
+
+  function triggerReaction(targetHIndex, targetHWorld) {
+    if (reacting || reactionDone) return;
+    reacting = true;
+    dragging = false;
+    lastTargetHIndex = targetHIndex;
+    usedPair = draggingPair;
+    draggingPair = null;
+    const usedDir = usedPair.position.clone().normalize();
+
+    updateStretchDash(targetHWorld);
+
+    setTimeout(() => {
+      worldGroup.remove(stretchDash);
+      stretchDash = null;
+
+      const targetH = hAcidAtoms[targetHIndex];
+      groupBase.attach(targetH);
+
+      const finalLocalPos = usedDir.clone().multiplyScalar(BOND_LEN);
+      tweenVec(targetH.position, finalLocalPos, 550, () => {
+        const newStick = makeStick(new THREE.Vector3(0,0,0), targetH.position);
+        groupBase.add(newStick);
+      });
+
+      tweenScalar((v) => {
+        sticksAcid[targetHIndex].material.opacity = v;
+      }, 0.85, 0, 400, () => { sticksAcid[targetHIndex].visible = false; });
+
+      const newLPOnAcid = makeLonePair(acidHDirs[targetHIndex], LP_DIST);
+      newLPOnAcid.scale.set(0.001,0.001,0.001);
+      groupAcid.add(newLPOnAcid);
+      tweenScalar((v) => newLPOnAcid.scale.set(v,v,v), 0.001, 1, 500, finishReaction);
+    }, 150);
+  }
+
+  function finishReaction() {
+    [acidBracket, baseBracket, acidCharge, baseCharge].forEach(obj => {
+      tweenScalar((v) => {
+        if (obj.material) { obj.material.transparent = true; obj.material.opacity = v; }
+      }, 1, 0, 500, () => { obj.visible = false; });
+    });
+    setTimeout(() => {
+      setStatus('');
+      reacting = false;
+      reactionDone = true;
+    }, 550);
+  }
+
+  function resetSimulation() {
+    reacting = false;
+    reactionDone = false;
+    dragging = false;
+    setStatus('');
+    if (stretchDash) { worldGroup.remove(stretchDash); stretchDash = null; }
+    draggingPair = null;
+
+    if (lastTargetHIndex >= 0) {
+      const targetH = hAcidAtoms[lastTargetHIndex];
+      groupAcid.attach(targetH);
+      targetH.position.copy(acidHDirs[lastTargetHIndex].clone().multiplyScalar(BOND_LEN));
+      sticksAcid[lastTargetHIndex].visible = true;
+      sticksAcid[lastTargetHIndex].material.opacity = 0.85;
+    }
+    lastTargetHIndex = -1;
+
+    if (usedPair) { usedPair.visible = true; usedPair = null; }
+    basePairs.forEach(p => { p.visible = true; });
+
+    groupBase.children.slice().forEach(c => {
+      if (![oBase, hBase, stickBase, lpActive, lp2, lp3, baseBracket, baseCharge].includes(c)) {
+        groupBase.remove(c);
+      }
+    });
+    groupAcid.children.slice().forEach(c => {
+      if (![oAcid, ...hAcidAtoms, ...sticksAcid, lpAcid, acidBracket, acidCharge].includes(c)) {
+        groupAcid.remove(c);
+      }
+    });
+
+    acidBracket.visible = true; acidBracket.material.opacity = 1; acidBracket.material.transparent = false;
+    baseBracket.visible = true; baseBracket.material.opacity = 1; baseBracket.material.transparent = false;
+    acidCharge.visible = true; acidCharge.material.opacity = 1;
+    baseCharge.visible = true; baseCharge.material.opacity = 1;
+  }
+
+  resetBtn.addEventListener('click', resetSimulation);
+
+  function animate() {
+    requestAnimationFrame(animate);
+    renderer.render(scene, camera);
+  }
+  requestAnimationFrame(animate);
+})();
+</script>
+</body>
+</html>
